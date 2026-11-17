@@ -82,9 +82,32 @@ static void hookVoid(Class cls, NSString *selName, NSUInteger argc) {
     hookBoth(cls, sel, imp, types);
 }
 
+#pragma mark - CloudKit 启动防崩溃
+
+// 根因：重签后 Bundle ID 变更，CKContainer.defaultContainer 找不到
+// iCloud.<新bundleid> 容器，loginForce: 里 fetchUserRecordID 触发 _os_crash。
+// 让 container 返回 nil -> 后续 fetchUserRecordID 发到 nil 变成 no-op，不崩。
+static id IRContainerNil(id self, SEL _cmd) { return nil; }
+
 #pragma mark - 安装所有 hook
 
 static void installHooks(void) {
+    // ---- 0) 启动防崩溃：绕开 CloudKit 初始化（无 iCloud 容器时必崩）----
+    Class cloudMgr = objc_getClass("JxdCloudServerManager");
+    if (cloudMgr) {
+        // container -> nil（阻断 defaultContainer + fetchUserRecordID 崩溃链）
+        SEL containerSel = NSSelectorFromString(@"container");
+        Method cm = class_getInstanceMethod(cloudMgr, containerSel);
+        if (cm) {
+            IMP cur = method_getImplementation(cm);
+            if (cur != (IMP)IRContainerNil) {
+                method_setImplementation(cm, (IMP)IRContainerNil);
+            }
+        }
+        // 双保险：loginForce: / login 直接 no-op，不触发 CloudKit 调用
+        hookVoid(cloudMgr, @"loginForce:", 1);
+    }
+
     // ---- 1) 永久会员 ----
     Class purchase = objc_getClass("PurchaseKit");
     hookBOOL(purchase, @"isValid",          YES);
