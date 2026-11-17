@@ -22,3 +22,10 @@ JxdIapTransaction
 (?i)VADateInfo
 (?i)BizAdDateInfo
 (?i)paidReward
+# 爱阅点专用（第二轮补充）
+BizManager
+BizUI
+CloudBizConfig
+BizAdDateInfo
+JxdNtpClient
+JxdLocalManager
