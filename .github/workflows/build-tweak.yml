@@ -11,18 +11,16 @@ on:
 permissions:
   contents: write
 
-# 不使用 concurrency 串行，避免 macOS runner 排队等待
-
 jobs:
   build:
-    name: Compile arm64 dylib on macOS 15+
-    runs-on: macos-15
+    name: Compile arm64 dylib on macOS 26
+    runs-on: macos-26
     timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify macOS 15+ runner
+      - name: Verify macOS >= 15
         run: |
           sw_vers
           V=$(sw_vers -productVersion | cut -d. -f1)
@@ -56,6 +54,6 @@ jobs:
           gh release delete "$TAG" -y --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
           gh release create "$TAG" tweak/iReadNoteTweak.dylib \
             --repo "$GITHUB_REPOSITORY" \
-            --title "iReadNote tweak dylib (arm64, macOS 15)" \
+            --title "iReadNote tweak dylib (arm64, macOS 26)" \
             --notes "Pure ObjC runtime tweak for LCSign injection."
           echo "Release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
