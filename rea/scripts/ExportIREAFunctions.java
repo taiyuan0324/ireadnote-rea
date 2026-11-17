@@ -69,7 +69,9 @@ public class ExportIREAFunctions extends GhidraScript {
             int ordinal = total;
             total++;
 
-            boolean inShard = (ordinal % shardCount) == shardIndex;
+            // 地址分片：对入口地址取模，跨独立分析稳定（序号分片会因分析漂移导致覆盖缺口）
+            long epOff = fn.getEntryPoint().getOffset();
+            boolean inShard = Math.floorMod(epOff, (long) shardCount) == shardIndex;
             if (!inShard) { skippedOtherShard++; continue; }
 
             boolean match = all;
