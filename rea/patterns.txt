@@ -1,0 +1,34 @@
+# 一行一个 Java regex（大小写不敏感由脚本统一处理）
+# 会员 / 权益 / IAP
+(?i)vip
+(?i)member
+(?i)membership
+(?i)entitle
+(?i)purchase
+(?i)iap
+(?i)storekit
+(?i)receipt
+(?i)restore
+(?i)ownership
+(?i)buyProduct
+(?i)preparePurchase
+(?i)product_id
+(?i)is_member
+(?i)vip_type
+(?i)memberReward
+# 广告 / 激励 / 爱阅点
+(?i)RewardAds
+(?i)AdManager
+(?i)reward
+(?i)BizAdDate
+(?i)VADate
+(?i)referral
+(?i)freePoint
+(?i)paidReward
+# Swift mangled 名称里的类名（IDA/Ghidra 会显示为 $s...JxdStoreKit... 之类）
+(?i)JxdStoreKit
+(?i)JxdIap
+# 校验 / 签名
+(?i)verify
+(?i)validate
+(?i)signature

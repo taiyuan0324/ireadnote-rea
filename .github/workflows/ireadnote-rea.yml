@@ -1,0 +1,306 @@
+# 爱阅记 iReadNote 5.3.0 IPA 静态逆向分析流水线
+# 目标：梳理广告任务 / 会员权益的触发条件、校验流程、客户端/服务端职责、授权状态判断
+#
+# Runner 说明（2026-11 核实）：
+#   macos-14 已于 2026-11-02 退役，禁止使用。
+#   macos-15 / macos-latest(=macos-26) = Apple Silicon arm64 (M1, 3 vCPU / 7GB)
+#   macos-15-xlarge = M2, 5C+8GPU / 14GB（付费 Team/Enterprise 才可用，按量计费）
+#   默认用 macos-15；可在 workflow_dispatch 的 runner_label 里切换。
+#   注意：本流水线的分析主体是 Python + Ghidra headless，二者跨平台。
+#        只有 class-dump 步骤是 macOS-only，且设为可失败不阻断。
+#        因此 fallback 到 ubuntu-latest 时除 class-dump 外全部照常产出。
+
+name: iReadNote IPA REA
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_label:
+        description: 'Runner label (Apple Silicon 优先)'
+        required: true
+        default: 'macos-15'
+        type: choice
+        options:
+          - macos-15            # M1 arm64, 标准
+          - macos-latest        # = macos-26 arm64
+          - macos-15-xlarge     # M2, 更大内存, 付费
+          - macos-15-intel      # Intel, 无 M 系列时兜底
+          - ubuntu-latest       # 全软件 fallback (无 class-dump)
+      ipa_source:
+        description: 'IPA 获取方式'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release   # 私有仓库 Release Asset + GITHUB_TOKEN
+          - url       # 预签名 URL，可选 secrets.IPA_DOWNLOAD_TOKEN
+          - path      # 已随仓库 checkout（或 Git LFS pull）
+      ipa_release_tag:
+        description: 'release 方式: tag 名'
+        required: false
+        default: 'ireadnote-5.3.0'
+        type: string
+      ipa_asset_pattern:
+        description: 'release 方式: asset 通配符'
+        required: false
+        default: '*.ipa'
+        type: string
+      ipa_url:
+        description: 'url 方式: IPA 直链'
+        required: false
+        default: ''
+        type: string
+      ipa_path:
+        description: 'path 方式: 仓库内相对路径'
+        required: false
+        default: 'samples/爱阅记_5.3.0.ipa'
+        type: string
+      expected_sha256:
+        description: '可选：期望 IPA SHA-256，空则只记录不校验'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rea-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  APP_NAME: iReadNote
+  BIN_NAME: iReadNote
+  # Ghidra 12.1.4, JDK 21. 该 SHA 来自官方 release notes；如构建号变化请以 release page 为准更新。
+  GHIDRA_VERSION: '12.1.4'
+  GHIDRA_ZIP: 'ghidra_12.1.4_PUBLIC_20260921.zip'
+  GHIDRA_SHA256: 'ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db'
+
+jobs:
+  rea:
+    name: REA on ${{ inputs.runner_label }}
+    runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: 60
+
+    steps:
+      # ---------------------------------------------------------------- 0. 环境
+      - name: Checkout pipeline scripts
+        uses: actions/checkout@v4
+
+      - name: Record runner identity
+        run: |
+          set -x
+          uname -a
+          echo "SW_VER: $(sw_vers -productVersion 2>/dev/null || echo 'not-macos')"
+          echo "ARCH:   $(uname -m)"
+          echo "JAVA:   $(java -version 2>&1 | head -1 || true)"
+          echo "RUNNER: ${{ inputs.runner_label }}"
+
+      - name: Setup JDK 21 (Ghidra 12.x requires JDK 21)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Create output directories
+        run: |
+          mkdir -p "$RUNNER_TEMP/rea/ipa" "$RUNNER_TEMP/rea/extracted" \
+                   "$RUNNER_TEMP/rea/out/ghidra" "$RUNNER_TEMP/rea/out/decompiled" \
+                   "$RUNNER_TEMP/rea/out/headers" "$RUNNER_TEMP/rea/logs" \
+                   "$RUNNER_TEMP/rea/ghidra-project"
+          echo "REA=$RUNNER_TEMP/rea" >> "$GITHUB_ENV"
+
+      # ---------------------------------------------------------------- 1. 依赖
+      # Ghidra 无安装器：下载 zip -> 校验 SHA256 -> 解压。
+      - name: Install Ghidra ${{ env.GHIDRA_VERSION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          URL="https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${{ env.GHIDRA_VERSION }}_build/${{ env.GHIDRA_ZIP }}"
+          curl -fL --retry 3 -o "$GHIDRA_ZIP" "$URL"
+          echo "${{ env.GHIDRA_SHA256 }}  $GHIDRA_ZIP" | shasum -a 256 -c -
+          unzip -q "$GHIDRA_ZIP" -d "$RUNNER_TEMP/tools"
+          INSTALL="$RUNNER_TEMP/tools/ghidra_${{ env.GHIDRA_VERSION }}_PUBLIC"
+          test -x "$INSTALL/support/analyzeHeadless"
+          echo "GHIDRA_INSTALL_DIR=$INSTALL" >> "$GITHUB_ENV"
+          echo "GHIDRA_HEADLESS_MAXMEM=6G" >> "$GITHUB_ENV"
+          echo "ghidra installed at $INSTALL"
+
+      # macOS-only 且非必需：class-dump 用于导出 ObjC 头文件，失败不阻断。
+      - name: Install class-dump (optional, macOS only)
+        continue-on-error: true
+        shell: bash
+        run: |
+          if [[ "$(uname -s)" == "Darwin" ]]; then
+            brew install class-dump || true
+            command -v class-dump || true
+          else
+            echo "skip class-dump on non-macOS runner"
+          fi
+
+      # ---------------------------------------------------------------- 2. 取 IPA
+      # 25MB 二进制不能塞 GitHub Secrets（单 secret 上限 64KB），必须用 Release / URL / LFS。
+      - name: Obtain IPA (${{ inputs.ipa_source }})
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IPA_TOKEN: ${{ secrets.IPA_DOWNLOAD_TOKEN }}
+        run: |
+          set -euo pipefail
+          D="$REA/ipa"
+          case "${{ inputs.ipa_source }}" in
+            release)
+              gh release download "${{ inputs.ipa_release_tag }}" \
+                --repo "$GITHUB_REPOSITORY" \
+                --pattern "${{ inputs.ipa_asset_pattern }}" \
+                --dir "$D" --clobber
+              ;;
+            url)
+              URL="${{ inputs.ipa_url }}"
+              test -n "$URL" || { echo "::error::ipa_url is empty"; exit 1; }
+              CURL_ARGS=(-fL --retry 3 -o "$D/app.ipa")
+              if [[ -n "${IPA_TOKEN:-}" ]]; then
+                CURL_ARGS+=(-H "Authorization: Bearer $IPA_TOKEN")
+              fi
+              curl "${CURL_ARGS[@]}" "$URL"
+              ;;
+            path)
+              P="${{ inputs.ipa_path }}"
+              test -f "$P" || { echo "::error::IPA not found at $P (checkout/LFS?)"; exit 1; }
+              cp "$P" "$D/app.ipa"
+              ;;
+            *) echo "::error::unknown ipa_source"; exit 1 ;;
+          esac
+          IPA=$(find "$D" -type f -iname '*.ipa' | head -1)
+          test -n "$IPA" || { echo "::error::no IPA obtained"; exit 1; }
+          echo "IPA_PATH=$IPA" >> "$GITHUB_ENV"
+          echo "IPA obtained: $IPA"
+
+      - name: Hash & optional integrity check
+        shell: bash
+        run: |
+          set -euo pipefail
+          SUM=$(shasum -a 256 "$IPA_PATH" | awk '{print $1}')
+          echo "IPA_SHA256=$SUM" >> "$GITHUB_ENV"
+          echo "IPA_SHA256=$SUM" | tee "$REA/logs/ipa.sha256"
+          EXP="${{ inputs.expected_sha256 }}"
+          if [[ -n "$EXP" ]]; then
+            [[ "$SUM" == "$EXP" ]] || { echo "::error::SHA256 mismatch: $SUM != $EXP"; exit 1; }
+            echo "integrity: PASS"
+          else
+            echo "integrity: recorded only (no expected_sha256 provided)"
+          fi
+
+      # ---------------------------------------------------------------- 3. 解包
+      - name: Unpack IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -q -o "$IPA_PATH" -d "$REA/extracted"
+          APP="$REA/extracted/Payload/${{ env.APP_NAME }}.app"
+          BIN="$APP/${{ env.BIN_NAME }}"
+          test -f "$APP/Info.plist" || { echo "::error::Info.plist missing"; exit 1; }
+          test -f "$BIN" || { echo "::error::main binary missing"; exit 1; }
+          echo "APP_DIR=$APP" >> "$GITHUB_ENV"
+          echo "BIN_PATH=$BIN" >> "$GITHUB_ENV"
+          echo "app=$APP"; echo "bin=$BIN"; ls -lh "$BIN"
+
+      # ---------------------------------------------------------------- 4. 静态侦察
+      # 纯 Python/stdlib，跨平台。产出 Mach-O 头/加密标志/ObjC 类与方法/cstring/本地化/端点/可疑密钥。
+      - name: Static recon (portable Python)
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 rea/scripts/analyze_artifact.py \
+            --app "$APP_DIR" \
+            --out "$REA/out" \
+            --patterns rea/patterns.txt \
+            2>&1 | tee "$REA/logs/recon.log"
+
+      - name: Gate - require decrypted binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          CRYPT=$(python3 -c "import json;print(json.load(open('$REA/out/summary.json'))['macho'].get('cryptid'))")
+          echo "cryptid=$CRYPT"
+          if [[ "$CRYPT" != "0" && "$CRYPT" != "None" && -n "$CRYPT" ]]; then
+            echo "::error::主二进制仍被 DRM 加密 (cryptid=$CRYPT)。CI 无法在无设备环境解密 App Store 加密包。"
+            echo "::error::请提供已砸壳/decrypted IPA（cryptid=0）后重跑。"
+            exit 1
+          fi
+          echo "binary decrypted (cryptid=0): static analysis valid"
+
+      # ---------------------------------------------------------------- 5. 深度反编译
+      # Ghidra headless: 全量自动分析 -> 后处理脚本导出目标函数伪代码 + 全部函数清单。
+      - name: Ghidra headless decompile (targeted functions)
+        shell: bash
+        run: |
+          set -o pipefail
+          "$GHIDRA_INSTALL_DIR/support/analyzeHeadless" \
+            "$REA/ghidra-project" ireadnote \
+            -import "$BIN_PATH" -overwrite \
+            -analysisTimeoutPerFile 2400 \
+            -scriptPath "$GITHUB_WORKSPACE/rea/scripts" \
+            -postScript ExportIREAFunctions.java "$REA/out/decompiled" "$GITHUB_WORKSPACE/rea/patterns.txt" \
+            -log "$REA/out/ghidra/analysis.log" \
+            -scriptlog "$REA/out/ghidra/script.log" \
+            -deleteProject \
+            2>&1 | tee "$REA/logs/ghidra.log"
+
+      # ---------------------------------------------------------------- 6. ObjC 头文件
+      - name: class-dump ObjC headers (optional)
+        continue-on-error: true
+        shell: bash
+        run: |
+          if command -v class-dump >/dev/null 2>&1; then
+            class-dump --arch arm64 -H -o "$REA/out/headers" "$BIN_PATH" 2>&1 \
+              | tee "$REA/logs/classdump.log"
+          else
+            echo "class-dump unavailable; ObjC class/method inventory already in out/objc_*"
+          fi
+
+      # ---------------------------------------------------------------- 7. 汇总报告
+      - name: Build human-readable report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 rea/scripts/build_report.py --out "$REA/out" 2>&1 | tee "$REA/logs/report.log"
+          echo "===== REA SUMMARY (tail) ====="
+          tail -60 "$REA/out/REPORT.txt" || true
+
+      # ---------------------------------------------------------------- 8. 产物打包 + 日志
+      - name: Package artifacts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$REA"
+          tar czf rea-bundle.tgz out logs
+          echo "bundle: $(ls -lh rea-bundle.tgz)"
+          echo "REA_BUNDLE=$REA/rea-bundle.tgz" >> "$GITHUB_ENV"
+
+      - name: Upload REA artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ireadnote-rea-${{ inputs.runner_label }}
+          path: |
+            ${{ env.REA }}/rea-bundle.tgz
+            ${{ env.REA }}/out/**
+            ${{ env.REA }}/logs/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## iReadNote REA"
+            echo "- runner: ${{ inputs.runner_label }}"
+            echo "- ipa_sha256: ${{ env.IPA_SHA256 }}"
+            echo "- cryptid: $(python3 -c "import json;print(json.load(open('$REA/out/summary.json'))['macho'].get('cryptid'))" 2>/dev/null || echo n/a)"
+            echo "- decompiled functions: $(find "$REA/out/decompiled" -name '*.c' 2>/dev/null | wc -l | tr -d ' ')"
+            echo "- artifacts: see uploaded bundle"
+          } >> "$GITHUB_STEP_SUMMARY"
