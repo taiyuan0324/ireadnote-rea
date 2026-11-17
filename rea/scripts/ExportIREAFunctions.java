@@ -69,9 +69,10 @@ public class ExportIREAFunctions extends GhidraScript {
             int ordinal = total;
             total++;
 
-            // 地址分片：对入口地址取模，跨独立分析稳定（序号分片会因分析漂移导致覆盖缺口）
+            // 地址分片：ARM64 函数入口按 4 字节对齐，直接取模会全落到 0 号片，
+            // 必须先用 >>2 去掉对齐位，再取模。
             long epOff = fn.getEntryPoint().getOffset();
-            boolean inShard = Math.floorMod(epOff, (long) shardCount) == shardIndex;
+            boolean inShard = Math.floorMod(epOff >> 2, (long) shardCount) == shardIndex;
             if (!inShard) { skippedOtherShard++; continue; }
 
             boolean match = all;
