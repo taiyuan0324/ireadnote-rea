@@ -89,13 +89,12 @@ jobs:
     name: REA ${{ inputs.scope }} shard-${{ matrix.shard }} on ${{ inputs.runner_label }}
     runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 350
-    # targeted 只跑 shard 0；full 跑全部 4 个分片
-    if: ${{ inputs.scope == 'full' || matrix.shard == 0 }}
     strategy:
       fail-fast: false
       max-parallel: 4
       matrix:
-        shard: [0, 1, 2, 3]
+        # targeted 只跑 1 片；full 跑 4 片
+        shard: ${{ fromJSON(inputs.scope == 'full' && '[0,1,2,3]' || '[0]') }}
 
     steps:
       # ---------------------------------------------------------------- 0. 环境
