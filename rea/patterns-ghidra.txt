@@ -1,0 +1,24 @@
+# Ghidra 专用：只反编译业务自有符号，排除 CSJ*/BU*/GAD* 广告 SDK 的海量同名函数
+# 目的是把 35MB arm64 二进制的反编译规模压到几十个函数，避免 auto-analysis 卡死。
+_TtC9iReadNote11JxdStoreKit
+JxdStoreKit
+fetchCurEntitlements
+fetchAppTransactionID
+purchaseWithProductID
+JxdIapProduct
+JxdIapTransaction
+(?i)BuyProduct
+(?i)preparePurchase
+(?i)ownershipType
+(?i)vip_type
+(?i)memberReward
+(?i)isCanPurchase
+(?i)PurchaseKit
+(?i)CloudPurchaseConfig
+(?i)IAPTranInfo
+(?i)AdManager
+(?i)BuRewardAds
+(?i)GgRewardAds
+(?i)VADateInfo
+(?i)BizAdDateInfo
+(?i)paidReward

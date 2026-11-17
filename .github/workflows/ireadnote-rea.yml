@@ -266,20 +266,24 @@ jobs:
 
       # ---------------------------------------------------------------- 5. 深度反编译
       # Ghidra headless: 全量自动分析 -> 后处理脚本导出目标函数伪代码 + 全部函数清单。
+      # 该步骤为 best-effort：35MB arm64 Swift/ObjC 的全量 auto-analysis 很重，
+      # 超时/失败都不能阻断报告生成和产物打包（continue-on-error）。
       - name: Ghidra headless decompile (targeted functions)
+        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
           "$GHIDRA_INSTALL_DIR/support/analyzeHeadless" \
             "$REA/ghidra-project" ireadnote \
             -import "$BIN_PATH" -overwrite \
-            -analysisTimeoutPerFile 2400 \
+            -analysisTimeoutPerFile 900 \
             -scriptPath "$GITHUB_WORKSPACE/rea/scripts" \
-            -postScript ExportIREAFunctions.java "$REA/out/decompiled" "$GITHUB_WORKSPACE/rea/patterns.txt" \
+            -postScript ExportIREAFunctions.java "$REA/out/decompiled" "$GITHUB_WORKSPACE/rea/patterns-ghidra.txt" \
             -log "$REA/out/ghidra/analysis.log" \
             -scriptlog "$REA/out/ghidra/script.log" \
             -deleteProject \
             2>&1 | tee "$REA/logs/ghidra.log"
+          echo "ghidra_step_exit=${PIPESTATUS[0]}" | tee -a "$REA/logs/ghidra.log"
 
       # ---------------------------------------------------------------- 6. ObjC 头文件
       - name: class-dump ObjC headers (optional)
