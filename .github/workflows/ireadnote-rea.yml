@@ -35,6 +35,11 @@ on:
           - release   # 私有仓库 Release Asset + GITHUB_TOKEN
           - url       # 预签名 URL，可选 secrets.IPA_DOWNLOAD_TOKEN
           - path      # 已随仓库 checkout（或 Git LFS pull）
+      only_shard:
+        description: '只跑指定分片(0-3)；-1=按 scope 决定'
+        required: false
+        default: '-1'
+        type: string
       scope:
         description: '反编译范围: targeted=业务类子集, full=全量函数(4分片)'
         required: true
@@ -94,7 +99,7 @@ jobs:
       max-parallel: 4
       matrix:
         # targeted 只跑 1 片；full 跑 4 片
-        shard: ${{ fromJSON(inputs.scope == 'full' && '[0,1,2,3]' || '[0]') }}
+        shard: ${{ fromJSON(inputs.only_shard != '-1' && format('[{0}]', inputs.only_shard) || (inputs.scope == 'full' && '[0,1,2,3]' || '[0]')) }}
 
     steps:
       # ---------------------------------------------------------------- 0. 环境
@@ -357,10 +362,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ireadnote-rea-${{ inputs.scope }}-shard${{ matrix.shard }}
-          path: |
-            ${{ env.REA }}/rea-bundle.tgz
-            ${{ env.REA }}/out/**
-            ${{ env.REA }}/logs/**
+          path: ${{ env.REA }}/rea-bundle.tgz
           if-no-files-found: warn
           retention-days: 30
 
