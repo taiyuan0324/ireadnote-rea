@@ -89,6 +89,10 @@ static void hookVoid(Class cls, NSString *selName, NSUInteger argc) {
 // 让 container 返回 nil -> 后续 fetchUserRecordID 发到 nil 变成 no-op，不崩。
 static id IRContainerNil(id self, SEL _cmd) { return nil; }
 
+// loginForce: 实际返回对象（调用方 objc_storeStrong retain 返回值），
+// 不能用 void hook，必须返回 nil 对象。参数(bool)在 w2，实现不读即可。
+static id IRLoginForceNil(id self, SEL _cmd) { return nil; }
+
 #pragma mark - 安装所有 hook
 
 static void installHooks(void) {
@@ -104,8 +108,15 @@ static void installHooks(void) {
                 method_setImplementation(cm, (IMP)IRContainerNil);
             }
         }
-        // 双保险：loginForce: / login 直接 no-op，不触发 CloudKit 调用
-        hookVoid(cloudMgr, @"loginForce:", 1);
+        // loginForce: -> 返回 nil 对象（不是 void！否则调用方 retain 垃圾返回值崩溃）
+        SEL loginSel = NSSelectorFromString(@"loginForce:");
+        Method lm = class_getInstanceMethod(cloudMgr, loginSel);
+        if (lm) {
+            IMP cur = method_getImplementation(lm);
+            if (cur != (IMP)IRLoginForceNil) {
+                method_setImplementation(lm, (IMP)IRLoginForceNil);
+            }
+        }
     }
 
     // ---- 1) 永久会员 ----
