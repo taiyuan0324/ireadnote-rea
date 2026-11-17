@@ -35,6 +35,14 @@ on:
           - release   # 私有仓库 Release Asset + GITHUB_TOKEN
           - url       # 预签名 URL，可选 secrets.IPA_DOWNLOAD_TOKEN
           - path      # 已随仓库 checkout（或 Git LFS pull）
+      scope:
+        description: '反编译范围: targeted=业务类子集, full=全量函数(4分片)'
+        required: true
+        default: 'targeted'
+        type: choice
+        options:
+          - targeted
+          - full
       ipa_release_tag:
         description: 'release 方式: tag 名'
         required: false
@@ -78,9 +86,16 @@ env:
 
 jobs:
   rea:
-    name: REA on ${{ inputs.runner_label }}
+    name: REA ${{ inputs.scope }} shard-${{ matrix.shard }} on ${{ inputs.runner_label }}
     runs-on: ${{ inputs.runner_label }}
-    timeout-minutes: 60
+    timeout-minutes: 350
+    # targeted 只跑 shard 0；full 跑全部 4 个分片
+    if: ${{ inputs.scope == 'full' || matrix.shard == 0 }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: [0, 1, 2, 3]
 
     steps:
       # ---------------------------------------------------------------- 0. 环境
@@ -265,20 +280,28 @@ jobs:
           echo "binary decrypted (cryptid=0): static analysis valid"
 
       # ---------------------------------------------------------------- 5. 深度反编译
-      # Ghidra headless: 全量自动分析 -> 后处理脚本导出目标函数伪代码 + 全部函数清单。
-      # 该步骤为 best-effort：35MB arm64 Swift/ObjC 的全量 auto-analysis 很重，
-      # 超时/失败都不能阻断报告生成和产物打包（continue-on-error）。
-      - name: Ghidra headless decompile (targeted functions)
+      # Ghidra headless: 自动分析 -> 后处理脚本导出伪代码 + 函数清单。
+      # scope=targeted: 仅业务类（patterns-ghidra.txt），单分片。
+      # scope=full    : ALL 匹配全部函数，按 matrix.shard 分 4 片并行。
+      # best-effort: 超时/失败不阻断报告与产物打包。
+      - name: Ghidra headless decompile (scope=${{ inputs.scope }} shard=${{ matrix.shard }})
         continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
+          SHARD="${{ matrix.shard }}"
+          if [[ "${{ inputs.scope }}" == "full" ]]; then
+            PAT="ALL"; SHARDS=4; ANALYZE_TIMEOUT=3000
+          else
+            PAT="$GITHUB_WORKSPACE/rea/patterns-ghidra.txt"; SHARDS=1; ANALYZE_TIMEOUT=900
+          fi
+          echo "scope=${{ inputs.scope }} pattern=$PAT shard=$SHARD/$SHARDS analyze_timeout=${ANALYZE_TIMEOUT}s"
           "$GHIDRA_INSTALL_DIR/support/analyzeHeadless" \
             "$REA/ghidra-project" ireadnote \
             -import "$BIN_PATH" -overwrite \
-            -analysisTimeoutPerFile 900 \
+            -analysisTimeoutPerFile "$ANALYZE_TIMEOUT" \
             -scriptPath "$GITHUB_WORKSPACE/rea/scripts" \
-            -postScript ExportIREAFunctions.java "$REA/out/decompiled" "$GITHUB_WORKSPACE/rea/patterns-ghidra.txt" \
+            -postScript ExportIREAFunctions.java "$REA/out/decompiled" "$PAT" "$SHARD" "$SHARDS" \
             -log "$REA/out/ghidra/analysis.log" \
             -scriptlog "$REA/out/ghidra/script.log" \
             -deleteProject \
@@ -321,7 +344,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ireadnote-rea-${{ inputs.runner_label }}
+          name: ireadnote-rea-${{ inputs.scope }}-shard${{ matrix.shard }}
           path: |
             ${{ env.REA }}/rea-bundle.tgz
             ${{ env.REA }}/out/**
