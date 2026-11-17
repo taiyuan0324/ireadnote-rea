@@ -127,6 +127,39 @@ jobs:
           echo "GHIDRA_HEADLESS_MAXMEM=6G" >> "$GITHUB_ENV"
           echo "ghidra installed at $INSTALL"
 
+      # 关键修复：Ghidra 官方包不含 macOS 原生反编译器（只有 linux_x86_64 / win_x86_64）。
+      # 不编译则 analyzeHeadless 会报 "os/mac_arm_64/decompile does not exist"，
+      # 反编译函数全部失败，导出 0 个伪代码。用 Xcode CLT 自带 clang/make/bison 从源码编译，约 20-40s。
+      - name: Build native decompiler for macOS (Ghidra 12.x ships no macOS build)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$(uname -s)" != "Darwin" ]]; then
+            echo "non-macOS runner: bundled linux/win decompiler is present, skip build"
+            exit 0
+          fi
+          G="$GHIDRA_INSTALL_DIR"
+          DECOMP_SRC="$G/Ghidra/Features/Decompiler/src/decompile/cpp"
+          ARCH="$(uname -m)"
+          if [[ "$ARCH" == "arm64" ]]; then
+            OSDIR="mac_arm_64"; ARCH_TYPE="-arch arm64"
+          else
+            OSDIR="mac_x86_64"; ARCH_TYPE="-arch x86_64"
+          fi
+          DEST="$G/Ghidra/Features/Decompiler/os/$OSDIR"
+          if [[ -x "$DEST/decompile" ]]; then
+            echo "decompiler already present at $DEST/decompile"
+            exit 0
+          fi
+          echo "building native decompiler for $OSDIR ($ARCH_TYPE) ..."
+          cd "$DECOMP_SRC"
+          make ghidra_opt ARCH_TYPE="$ARCH_TYPE" OSDIR="$OSDIR" 2>&1 | tail -5
+          mkdir -p "$DEST"
+          install -m 755 ghidra_opt "$DEST/decompile"
+          file "$DEST/decompile"
+          test -x "$DEST/decompile"
+          echo "native decompiler ready: $DEST/decompile"
+
       # macOS-only 且非必需：class-dump 用于导出 ObjC 头文件，失败不阻断。
       - name: Install class-dump (optional, macOS only)
         continue-on-error: true
