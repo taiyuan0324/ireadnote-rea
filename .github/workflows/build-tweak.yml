@@ -13,43 +13,26 @@ permissions:
 
 jobs:
   build:
-    name: Compile arm64 dylib on macOS 26
-    runs-on: macos-26
+    name: Compile arm64 dylib (macos-latest)
+    runs-on: macos-latest
     timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify toolchain
-        run: |
-          set -x
-          sw_vers
-          clang --version | head -2
-          echo "ICLANG=$(xcrun --find clang)"
-          echo "SDK=$(xcrun --sdk iphoneos --show-sdk-path)"
-          ls -la tweak/
-
       - name: Compile tweak dylib (arm64)
         shell: bash
         run: |
+          set -euo pipefail
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           xcrun -sdk iphoneos clang -dynamiclib -arch arm64 \
             -isysroot "$SDK" \
             -miphoneos-version-min=13.0 -fobjc-arc \
             -framework Foundation -framework UIKit \
             -install_name @rpath/iReadNoteTweak.dylib \
-            -o tweak/iReadNoteTweak.dylib tweak/iReadNoteTweak.m 2>&1 | tee build.log
-          RC=${PIPESTATUS[0]}
-          if [ "$RC" -ne 0 ]; then
-            echo "### COMPILE FAILED rc=$RC" >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            cat build.log >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-          file tweak/iReadNoteTweak.dylib | tee -a "$GITHUB_STEP_SUMMARY"
+            -o tweak/iReadNoteTweak.dylib tweak/iReadNoteTweak.m
+          file tweak/iReadNoteTweak.dylib
           ls -lh tweak/iReadNoteTweak.dylib
-          otool -L tweak/iReadNoteTweak.dylib
           shasum -a 256 tweak/iReadNoteTweak.dylib
 
       - name: Publish dylib as Release asset
@@ -62,6 +45,6 @@ jobs:
           gh release delete "$TAG" -y --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
           gh release create "$TAG" tweak/iReadNoteTweak.dylib \
             --repo "$GITHUB_REPOSITORY" \
-            --title "iReadNote tweak dylib (arm64, macOS 26)" \
+            --title "iReadNote tweak dylib (arm64)" \
             --notes "Pure ObjC runtime tweak for LCSign injection."
           echo "Release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
