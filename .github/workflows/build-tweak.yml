@@ -20,26 +20,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify macOS >= 15
+      - name: Verify toolchain
         run: |
+          set -x
           sw_vers
-          V=$(sw_vers -productVersion | cut -d. -f1)
-          echo "macOS major=$V (require >=15)"
-          test "$V" -ge 15 || { echo "::error::macOS < 15"; exit 1; }
           clang --version | head -2
-          echo "SDK: $(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "ICLANG=$(xcrun --find clang)"
+          echo "SDK=$(xcrun --sdk iphoneos --show-sdk-path)"
+          ls -la tweak/
 
       - name: Compile tweak dylib (arm64)
         shell: bash
         run: |
-          set -euo pipefail
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          clang -dynamiclib -arch arm64 -isysroot "$SDK" \
-            -miphoneos-version-min=13.0 -fobjc-arc -fobjc-runtime=ios-13.0 \
+          xcrun -sdk iphoneos clang -dynamiclib -arch arm64 \
+            -isysroot "$SDK" \
+            -miphoneos-version-min=13.0 -fobjc-arc \
             -framework Foundation -framework UIKit \
             -install_name @rpath/iReadNoteTweak.dylib \
-            -o tweak/iReadNoteTweak.dylib tweak/iReadNoteTweak.m
-          file tweak/iReadNoteTweak.dylib
+            -o tweak/iReadNoteTweak.dylib tweak/iReadNoteTweak.m 2>&1 | tee build.log
+          RC=${PIPESTATUS[0]}
+          if [ "$RC" -ne 0 ]; then
+            echo "### COMPILE FAILED rc=$RC" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat build.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          file tweak/iReadNoteTweak.dylib | tee -a "$GITHUB_STEP_SUMMARY"
           ls -lh tweak/iReadNoteTweak.dylib
           otool -L tweak/iReadNoteTweak.dylib
           shasum -a 256 tweak/iReadNoteTweak.dylib
