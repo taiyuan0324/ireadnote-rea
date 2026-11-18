@@ -86,35 +86,27 @@ static void hookVoid(Class cls, NSString *selName, NSUInteger argc) {
 
 // 根因：重签后 Bundle ID 变更，CKContainer.defaultContainer 找不到
 // iCloud.<新bundleid> 容器，loginForce: 里 fetchUserRecordID 触发 _os_crash。
-// 让 container 返回 nil -> 后续 fetchUserRecordID 发到 nil 变成 no-op，不崩。
+// 只让 container 返回 nil：loginForce: 内部拿到 nil 后，
+// [nil fetchUserRecordIDWithCompletionHandler:] 是 no-op，安全返回。
+// 注意：绝不能 hook loginForce: 本身 —— 它返回对象，调用方会 retain 返回值，
+// 用 void 实现会导致 retain 垃圾指针崩溃（这就是 v2 的闪退原因）。
 static id IRContainerNil(id self, SEL _cmd) { return nil; }
 
-// loginForce: 实际返回对象（调用方 objc_storeStrong retain 返回值），
-// 不能用 void hook，必须返回 nil 对象。参数(bool)在 w2，实现不读即可。
-static id IRLoginForceNil(id self, SEL _cmd) { return nil; }
+// 版本标记（可通过 strings 校验 dylib 版本）
+__attribute__((used)) static const char *kIRVersion = "IRTWEAK_V3_container_nil_only";
 
 #pragma mark - 安装所有 hook
 
 static void installHooks(void) {
-    // ---- 0) 启动防崩溃：绕开 CloudKit 初始化（无 iCloud 容器时必崩）----
+    // ---- 0) 启动防崩溃：只把 container 置 nil，不碰 loginForce: ----
     Class cloudMgr = objc_getClass("JxdCloudServerManager");
     if (cloudMgr) {
-        // container -> nil（阻断 defaultContainer + fetchUserRecordID 崩溃链）
         SEL containerSel = NSSelectorFromString(@"container");
         Method cm = class_getInstanceMethod(cloudMgr, containerSel);
         if (cm) {
             IMP cur = method_getImplementation(cm);
             if (cur != (IMP)IRContainerNil) {
                 method_setImplementation(cm, (IMP)IRContainerNil);
-            }
-        }
-        // loginForce: -> 返回 nil 对象（不是 void！否则调用方 retain 垃圾返回值崩溃）
-        SEL loginSel = NSSelectorFromString(@"loginForce:");
-        Method lm = class_getInstanceMethod(cloudMgr, loginSel);
-        if (lm) {
-            IMP cur = method_getImplementation(lm);
-            if (cur != (IMP)IRLoginForceNil) {
-                method_setImplementation(lm, (IMP)IRLoginForceNil);
             }
         }
     }
