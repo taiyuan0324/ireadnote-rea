@@ -92,13 +92,22 @@ static void hookVoid(Class cls, NSString *selName, NSUInteger argc) {
 // 用 void 实现会导致 retain 垃圾指针崩溃（这就是 v2 的闪退原因）。
 static id IRContainerNil(id self, SEL _cmd) { return nil; }
 
+// ---- 伪在线 / 伪登录：解锁所有依赖云端的付费功能 ----
+// CurNetworkStatus 返回值: 0=无网 1=WiFi 2=蜂窝。返回 1 让所有网络闸门放行
+static long long IRNetStatus(id self, SEL _cmd) { return 1; }
+// isLogin 判断 +(0x48)==2，container=nil 永远到不了 2，这里直接给 YES
+static id IRUserRecordName(id self, SEL _cmd) { return @"iReadLocalUser"; }
+static id IRUserId(id self, SEL _cmd) { return @"iReadLocalUser"; }
+// NTP 时间：离线拿不到，用系统时间兜底（爱阅点奖励/时长校验用）
+static id IRNetDate(id self, SEL _cmd) { return [NSDate date]; }
+
 // 版本标记（可通过 strings 校验 dylib 版本）
-__attribute__((used)) static const char *kIRVersion = "IRTWEAK_V3_container_nil_only";
+__attribute__((used)) static const char *kIRVersion = "IRTWEAK_V4_fake_online_unlock";
 
 #pragma mark - 安装所有 hook
 
 static void installHooks(void) {
-    // ---- 0) 启动防崩溃：只把 container 置 nil，不碰 loginForce: ----
+    // ---- 0) 启动防崩溃 + 伪在线解锁 ----
     Class cloudMgr = objc_getClass("JxdCloudServerManager");
     if (cloudMgr) {
         SEL containerSel = NSSelectorFromString(@"container");
@@ -109,6 +118,32 @@ static void installHooks(void) {
                 method_setImplementation(cm, (IMP)IRContainerNil);
             }
         }
+        hookBOOL(cloudMgr, @"isLogin", YES);
+        Method urn = class_getInstanceMethod(cloudMgr, NSSelectorFromString(@"userRecordName"));
+        if (urn) method_setImplementation(urn, (IMP)IRUserRecordName);
+        Method uid = class_getInstanceMethod(cloudMgr, NSSelectorFromString(@"userId"));
+        if (uid) method_setImplementation(uid, (IMP)IRUserId);
+    }
+
+    // 网络状态永真 -> BizManager::start / CheckOpenContentUI / isCanPurchase 全部放行
+    Class net = objc_getClass("JxdNetSub");
+    if (net) {
+        Method nm = class_getInstanceMethod(net, NSSelectorFromString(@"CurNetworkStatus"));
+        if (nm) method_setImplementation(nm, (IMP)IRNetStatus);
+    }
+
+    // NTP 时间永真 -> addReward 等时间校验不再因离线失败
+    Class ntp = objc_getClass("JxdNtpClient");
+    if (ntp) {
+        Method nd = class_getInstanceMethod(ntp, NSSelectorFromString(@"netDate"));
+        if (nd) method_setImplementation(nd, (IMP)IRNetDate);
+    }
+
+    // 付费内容闸门直接短路（分享/导出/复制不再弹购买）
+    Class sdu = objc_getClass("ShareDataUnit");
+    if (sdu) {
+        hookVoid(sdu, @"CheckOpenContentUI", 0);
+        hookVoid(sdu, @"OpenContentUI", 0);
     }
 
     // ---- 1) 永久会员 ----
